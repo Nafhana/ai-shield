@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/venv
+*/__pycache__/
+# datasets
+injection_dataset/
+*.csv
+*.pkl
+__pycache__/
+
