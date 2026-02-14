@@ -3,7 +3,7 @@ import joblib
 import os
 import math # Added for ceil
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import SGDClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score
 
@@ -54,7 +54,6 @@ def train():
     if os.path.exists(feedback_path):
         print("Loading human feedback...")
         feedback_df = pd.read_csv(feedback_path)
-        
         # DEDUPLICATE: Keep only the LAST label for each unique text
         # This prevents conflicting labels (e.g. user toggled Safe -> Malicious) from confusing the model
         feedback_df = feedback_df.drop_duplicates(subset=['text'], keep='last')
@@ -62,7 +61,7 @@ def train():
         # UPSAMPLE FEEDBACK: Repeat feedback 1000x to ensure it has impact
         feedback_upsampled = pd.concat([feedback_df] * 1000, ignore_index=True)
         # Combine with existing malicious data or safe data based on label
-        malicious_df = pd.concat([malicious_df, feedback_upsampled[feedback_upsampled['label'] == 1][['text', 'label']]], ignore_index=True)
+        malicious_df = pd.concat([malicious_df, feedback_df[feedback_df['label'] == 1][['text', 'label']]], ignore_index=True)
 
     # 2. Generate/Load Safe Prompts
     # Synthetic Safe Prompts (Normal business queries)
@@ -111,8 +110,7 @@ def train():
 
     # Add safe feedback to safe_df
     if os.path.exists(feedback_path):
-        # We already upsampled it above as feedback_upsampled
-        safe_df = pd.concat([safe_df, feedback_upsampled[feedback_upsampled['label'] == 0][['text', 'label']]], ignore_index=True)
+        safe_df = pd.concat([safe_df, feedback_df[feedback_df['label'] == 0][['text', 'label']]], ignore_index=True)
 
     print(f"Malicious samples: {len(malicious_df)}")
     print(f"Safe samples (Upsampled): {len(safe_df)}")
@@ -132,8 +130,8 @@ def train():
     X_test_vec = vectorizer.transform(X_test)
     
     # Train Model
-    print("Training Logistic Regression...")
-    model = LogisticRegression(class_weight='balanced', max_iter=1000) # handle imbalance
+    print("Training SGD Classifier (Log Loss)...")
+    model = SGDClassifier(loss='log_loss', class_weight='balanced', max_iter=1000, learning_rate='constant', eta0=2.0, alpha=0.0) # handle imbalance
     model.fit(X_train_vec, y_train)
     
     # Evaluation
@@ -146,6 +144,22 @@ def train():
     joblib.dump(model, "model.pkl")
     joblib.dump(vectorizer, "vectorizer.pkl")
     print("Done!")
+
+def update_model_live(model, vectorizer, text, label):
+    print("Updating model weights in memory...")
+    # Vectorize the new sample
+    X_new = vectorizer.transform([text])
+    
+    # Check if model supports partial_fit (e.g. SGDClassifier)
+    if hasattr(model, "partial_fit"):
+        # Partial fit (online learning) to update weights immediately
+        # Hammer the point home 5 times
+        for _ in range(5):
+            model.partial_fit(X_new, [label])
+    else:
+        print("Warning: Current model does not support partial_fit. Skipping live update.")
+        
+    return model
 
 if __name__ == "__main__":
     train()

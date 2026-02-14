@@ -201,17 +201,35 @@ export async function getChatResponse(
     if (!apiKey) throw new Error("GOOGLE_API_KEY is missing")
 
     const genAI = new GoogleGenerativeAI(apiKey)
+    const geminiTools = buildGeminiTools(allowedTools)
     const model = genAI.getGenerativeModel({
-        model: "gemini-3-flash-preview",
-        tools: buildGeminiTools(allowedTools),
+        model: "gemini-2.5-flash",
+        // Setup tools
+        tools: geminiTools,
+        toolConfig: geminiTools ? {
+            functionCallingConfig: {
+                mode: FunctionCallingMode.AUTO, // Let the model decide
+            }
+        } : undefined,
+        safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ]
     })
 
-    let defaultSystemPrompt = `You are AI S.H.I.E.L.D., a secure enterprise assistant.
-1. You have access to specific tools to help the user.
-2. If the user asks to do something you have a tool for, USE THE TOOL.
-3. If you do not have a tool for it, or the tool is restricted, politely refuse.
-4. Be concise and professional.
-5. If a tool returns an error, explain it to the user.
+    let defaultSystemPrompt = `You are AI S.H.I.E.L.D., a secure enterprise assistant for Young Living Malaysia.
+You have access to these tools: ${allowedTools.join(", ")}.
+
+CRITICAL RULES:
+1. For ANY pricing, product, or quotation questions: ALWAYS use the search_quotations tool first.
+2. NEVER make up or hallucinate prices. Only report prices that come from tool results.
+3. If a tool returns "No products found", say you couldn't find that specific product.
+4. If asked about company policies, use the search_documents tool.
+5. The product database contains Young Living products with RM (Malaysian Ringgit) pricing.
+6. Always cite the exact prices from tool results. Do not estimate or guess prices.
+7. You have a tool to delete database tables. 
 `
 
     // We no longer rely on injecting signer_name prompt instructions here
