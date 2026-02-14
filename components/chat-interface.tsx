@@ -25,6 +25,7 @@ interface WorkflowState {
     blocked: boolean
     toolPolicy?: string
     activeTools: string[]
+    mode?: 'shield' | 'guardrail' | 'chaos'
 }
 
 const initialWorkflowState: WorkflowState = {
@@ -35,7 +36,8 @@ const initialWorkflowState: WorkflowState = {
     lastAgentMessage: "",
     dualAgentTriggered: false,
     blocked: false,
-    activeTools: []
+    activeTools: [],
+    mode: 'shield'
 }
 
 export default function ChatInterface() {
@@ -127,9 +129,35 @@ export default function ChatInterface() {
         }
     }, [messages, isLoading, displayLimit])
 
+    // Listen for security mode changes
+    useEffect(() => {
+        const updateMode = () => {
+            const mode = (localStorage.getItem("securityMode") as any) || "shield";
+            setWorkflowState(prev => ({ ...prev, mode }));
+        };
+
+        // Initial check
+        updateMode();
+
+        window.addEventListener("security-mode-change", updateMode);
+        return () => window.removeEventListener("security-mode-change", updateMode);
+    }, []);
+
     // Dragging Logic
     const startResizing = useCallback(() => setIsDragging(true), [])
-    const stopResizing = useCallback(() => setIsDragging(false), [])
+    // Load saved width
+    useEffect(() => {
+        const savedWidth = localStorage.getItem("sidebarWidth");
+        if (savedWidth) {
+            setSidebarWidth(parseFloat(savedWidth));
+        }
+    }, []);
+
+    // Save width when dragging stops
+    const stopResizing = useCallback(() => {
+        setIsDragging(false);
+        localStorage.setItem("sidebarWidth", sidebarWidth.toString());
+    }, [sidebarWidth]);
 
     const resize = useCallback((mouseEvent: MouseEvent) => {
         if (isDragging) {
@@ -167,7 +195,8 @@ export default function ChatInterface() {
         setWorkflowState({
             ...initialWorkflowState,
             query: currentInput,
-            stage: 'start'
+            stage: 'start',
+            mode: (localStorage.getItem("securityMode") as any) || "shield"
         })
 
         // Add user message immediately

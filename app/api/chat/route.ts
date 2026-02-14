@@ -65,34 +65,42 @@ export async function POST(req: Request) {
                 let mlVerdict = "UNCERTAIN"
                 let mlConfidence = 0
 
-                try {
-                    const mlResponse = await fetch(ML_SERVICE_URL, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ message }),
-                    })
+                // BYPASS LOGIC: If mode is NOT 'shield', skip ML checks
+                if (mode === 'shield') {
+                    try {
+                        const mlResponse = await fetch(ML_SERVICE_URL, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ message }),
+                        })
 
-                    if (mlResponse.ok) {
-                        const mlData = await mlResponse.json()
-                        mlConfidence = mlData.confidence_score
+                        if (mlResponse.ok) {
+                            const mlData = await mlResponse.json()
+                            mlConfidence = mlData.confidence_score
 
-                        if (mlConfidence >= 0.85) {
-                            mlVerdict = "MALICIOUS"
-                        } else if (mlConfidence <= 0.2) {
-                            mlVerdict = "SAFE"
-                        } else {
-                            mlVerdict = "UNCERTAIN"
+                            if (mlConfidence >= 0.85) {
+                                mlVerdict = "MALICIOUS"
+                            } else if (mlConfidence <= 0.2) {
+                                mlVerdict = "SAFE"
+                            } else {
+                                mlVerdict = "UNCERTAIN"
+                            }
                         }
+                    } catch (e) {
+                        console.error("ML Service Unavailable:", e)
                     }
-                } catch (e) {
-                    console.error("ML Service Unavailable:", e)
+                } else {
+                    console.log(`[API] Guardrails disabled (Mode: ${mode}). Skipping ML check.`);
+                    mlVerdict = "SAFE"; // Force safe
+                    mlConfidence = 0;
                 }
 
                 // SENSITIVE PROMOTION HEURISTIC: Force into Layer 2 for specific risky keywords
                 // SENSITIVE PROMOTION HEURISTIC: Force into Layer 2 for specific risky keywords
                 // BUT ONLY if the ML model hasn't already flagged it as MALICIOUS.
+                // AND ONLY if we are in SHIELD mode.
                 const sensitiveKeywords = ["sales", "revenue", "employee", "salary", "database", "sql", "delete", "personal", "member", "boss", "org", "chart", "hierarchy", "email", "drop", "table"];
-                if (mlVerdict !== "MALICIOUS" && sensitiveKeywords.some(kw => message.toLowerCase().includes(kw))) {
+                if (mode === 'shield' && mlVerdict !== "MALICIOUS" && sensitiveKeywords.some(kw => message.toLowerCase().includes(kw))) {
                     console.log(`[API] Sensitive keyword detected in SAFE/UNCERTAIN query. Promoting to UNCERTAIN for Dual Agent review.`);
                     mlVerdict = "UNCERTAIN";
                 }

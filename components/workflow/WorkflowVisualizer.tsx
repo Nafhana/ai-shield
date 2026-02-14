@@ -163,139 +163,205 @@ export function WorkflowVisualizer({ workflowState, onNodeClick }: WorkflowVisua
     const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
     const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
-    // Initial load from localStorage
-    useEffect(() => {
-        const saved = localStorage.getItem('workflow-node-positions');
-        if (saved) {
-            try {
-                const positions = JSON.parse(saved);
-                setNodes(nds => nds.map(node => ({
-                    ...node,
-                    position: positions[node.id] || node.position
-                })));
-            } catch (e) {
-                console.error("Failed to load node positions", e);
-            }
-        }
-    }, [setNodes]);
-
     const onNodeDragStop = (_: any, node: any) => {
-        const saved = localStorage.getItem('workflow-node-positions');
+        const mode = workflowState?.mode || 'shield';
+        const isBypassMode = mode !== 'shield';
+        const storageKey = isBypassMode ? 'workflow-node-positions-bypass' : 'workflow-node-positions-shield';
+
+        const saved = localStorage.getItem(storageKey);
         const positions = saved ? JSON.parse(saved) : {};
         positions[node.id] = node.position;
-        localStorage.setItem('workflow-node-positions', JSON.stringify(positions));
+        localStorage.setItem(storageKey, JSON.stringify(positions));
     };
 
+
+    // Sync workflowState with nodes/edges
     // Sync workflowState with nodes/edges
     useEffect(() => {
         if (!workflowState) return;
 
-        setNodes((nds) =>
-            nds.map((node) => {
-                // Update User Node
-                if (node.id === 'user') {
-                    return {
-                        ...node,
-                        data: {
-                            ...node.data,
-                            label: workflowState.query || 'Waiting...',
-                            status: workflowState.stage === 'start' ? 'active' : 'success'
-                        }
-                    };
+        const mode = workflowState.mode || 'shield';
+        const isBypassMode = mode !== 'shield';
+        const storageKey = isBypassMode ? 'workflow-node-positions-bypass' : 'workflow-node-positions-shield';
+
+        // Load saved positions
+        let savedPositions: Record<string, { x: number, y: number }> = {};
+        try {
+            const saved = localStorage.getItem(storageKey);
+            if (saved) savedPositions = JSON.parse(saved);
+        } catch (e) {
+            console.error("Failed to load node positions", e);
+        }
+
+        const getPos = (id: string, defaultPos: { x: number, y: number }) => savedPositions[id] || defaultPos;
+
+        // ------------------------------------------------------------------
+        // BYPASS MODE (No Guardrail / Standard Guardrail)
+        // ------------------------------------------------------------------
+        if (isBypassMode) {
+            setNodes([
+                {
+                    id: 'user', type: 'user',
+                    position: getPos('user', { x: 50, y: 100 }),
+                    data: {
+                        label: workflowState.query || 'Waiting...',
+                        status: workflowState.stage === 'start' ? 'active' : 'success'
+                    }
+                },
+                {
+                    id: 'agent', type: 'agent',
+                    position: getPos('agent', { x: 400, y: 100 }), // Moved closer
+                    data: {
+                        status: workflowState.stage === 'final' ? 'success' : 'idle'
+                    }
+                },
+                {
+                    id: 'toolbox', type: 'toolbox',
+                    position: getPos('toolbox', { x: 650, y: 100 }), // Moved closer
+                    data: {
+                        policy: workflowState.blocked ? "SHUTDOWN" : (workflowState.toolPolicy || "ALLOW_ALL"),
+                        activeTools: workflowState.activeTools || []
+                    }
                 }
+            ] as any);
 
-                // Update ML Node
-                if (node.id === 'ml') {
-                    let status = 'idle';
-                    if (workflowState.stage === 'ml_processing') status = 'active';
-                    if (['ml_done', 'debate', 'final'].includes(workflowState.stage)) status = 'success';
-
-                    return {
-                        ...node,
-                        data: {
-                            ...node.data,
-                            status,
-                            confidence: workflowState.mlConfidence
-                        }
-                    };
+            setEdges([
+                {
+                    id: 'e-bypass',
+                    source: 'user',
+                    target: 'agent',
+                    animated: true,
+                    style: { stroke: '#ffffff', strokeWidth: 5 },
+                    label: 'Direct Access',
+                    labelStyle: { fill: '#ffffff', fontWeight: 700 }
+                },
+                {
+                    id: 'e8',
+                    source: 'agent',
+                    sourceHandle: 'agent-source',
+                    target: 'toolbox',
+                    targetHandle: 'toolbox-top',
+                    animated: true,
+                    style: { stroke: '#ffffff', strokeDasharray: '5,5', strokeWidth: 5 },
+                    markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
                 }
+            ] as any);
+            return;
+        }
 
-                // Update Switch Node
-                if (node.id === 'switch') {
-                    let status = 'idle';
-                    if (workflowState.stage === 'ml_done') status = 'active';
-                    if (['debate', 'final'].includes(workflowState.stage)) status = 'success';
+        // ------------------------------------------------------------------
+        // SHIELD MODE (Full Visualization)
+        // ------------------------------------------------------------------
+        setNodes(initialNodes.map((node) => {
+            // Use saved position if available
+            const position = getPos(node.id, node.position);
 
-                    return {
-                        ...node,
-                        data: {
-                            ...node.data,
-                            status,
-                            verdict: workflowState.mlVerdict
-                        }
-                    };
-                }
+            // Update User Node
+            if (node.id === 'user') {
+                return {
+                    ...node,
+                    position,
+                    data: {
+                        ...node.data,
+                        label: workflowState.query || 'Waiting...',
+                        status: workflowState.stage === 'start' ? 'active' : 'success'
+                    }
+                };
+            }
 
-                // Update Dual Agent Node
-                if (node.id === 'dualAgent') {
-                    let status = 'idle';
-                    if (workflowState.stage === 'debate') status = 'active';
-                    // If we passed debate successfully or failed it
-                    if (workflowState.dualAgentTriggered && workflowState.stage === 'final') status = 'success';
+            // Update ML Node
+            if (node.id === 'ml') {
+                let status = 'idle';
+                if (workflowState.stage === 'ml_processing') status = 'active';
+                if (['ml_done', 'debate', 'final'].includes(workflowState.stage)) status = 'success';
 
-                    return {
-                        ...node,
-                        data: {
-                            ...node.data,
-                            status,
-                            currentMessage: workflowState.lastAgentMessage || '',
-                            agentDialogue: workflowState.agentDialogue
-                        }
-                    } as any;
-                }
+                return {
+                    ...node,
+                    position,
+                    data: {
+                        ...node.data,
+                        status,
+                        confidence: workflowState.mlConfidence
+                    }
+                };
+            }
 
-                // Update Oblivion Node
-                if (node.id === 'oblivion') {
-                    let status = 'idle';
-                    if (workflowState.blocked) status = 'error';
-                    return {
-                        ...node,
-                        data: { ...node.data, status }
-                    };
-                }
+            // Update Switch Node
+            if (node.id === 'switch') {
+                let status = 'idle';
+                if (workflowState.stage === 'ml_done') status = 'active';
+                if (['debate', 'final'].includes(workflowState.stage)) status = 'success';
 
-                // Update Agent Node
-                if (node.id === 'agent') {
-                    let status = 'idle';
-                    if (!workflowState.blocked && workflowState.stage === 'final') status = 'success';
-                    return {
-                        ...node,
-                        data: { ...node.data, status }
-                    };
-                }
+                return {
+                    ...node,
+                    position,
+                    data: {
+                        ...node.data,
+                        status,
+                        verdict: workflowState.mlVerdict
+                    }
+                };
+            }
 
-                // Update Toolbox Node
-                // Update ToolboxNode
-                if (node.id === 'toolbox') {
-                    // Default to ALLOW_ALL if not specified, 
-                    // or inherit from workflow state if available
-                    // We need to pass policy from ChatInterface -> WorkflowState -> Here
-                    const policy = workflowState.blocked ? "SHUTDOWN" : (workflowState.toolPolicy || "ALLOW_ALL");
-                    const activeTools = workflowState.activeTools || [];
+            // Update Dual Agent Node
+            if (node.id === 'dualAgent') {
+                let status = 'idle';
+                if (workflowState.stage === 'debate') status = 'active';
+                // If we passed debate successfully or failed it
+                if (workflowState.dualAgentTriggered && workflowState.stage === 'final') status = 'success';
 
-                    return {
-                        ...node,
-                        data: { ...node.data, policy, activeTools }
-                    };
-                }
+                return {
+                    ...node,
+                    position,
+                    data: {
+                        ...node.data,
+                        status,
+                        currentMessage: workflowState.lastAgentMessage || '',
+                        agentDialogue: workflowState.agentDialogue
+                    }
+                } as any;
+            }
 
-                return node;
-            })
-        );
+            // Update Oblivion Node
+            if (node.id === 'oblivion') {
+                let status = 'idle';
+                if (workflowState.blocked) status = 'error';
+                return {
+                    ...node,
+                    position,
+                    data: { ...node.data, status }
+                };
+            }
+
+            // Update Agent Node
+            if (node.id === 'agent') {
+                let status = 'idle';
+                if (!workflowState.blocked && workflowState.stage === 'final') status = 'success';
+                return {
+                    ...node,
+                    position,
+                    data: { ...node.data, status }
+                };
+            }
+
+            // Update Toolbox Node
+            if (node.id === 'toolbox') {
+                const policy = workflowState.blocked ? "SHUTDOWN" : (workflowState.toolPolicy || "ALLOW_ALL");
+                const activeTools = workflowState.activeTools || [];
+
+                return {
+                    ...node,
+                    position,
+                    data: { ...node.data, policy, activeTools }
+                };
+            }
+
+            return { ...node, position };
+        }));
 
         // Update Edges based on path
         setEdges((eds) =>
-            eds.map((edge) => {
+            initialEdges.map((edge) => { // Use initialEdges as base to prevent state drift
                 const stage = workflowState.stage;
 
                 // Input -> ML
@@ -422,6 +488,8 @@ export function WorkflowVisualizer({ workflowState, onNodeClick }: WorkflowVisua
                 onNodeDragStop={onNodeDragStop}
                 nodeTypes={nodeTypes}
                 fitView
+                // Force re-render of fitView when switching modes to center the new graph
+                fitViewOptions={{ padding: 0.2, duration: 800 }}
                 minZoom={0.1}
                 maxZoom={4}
                 attributionPosition="bottom-right"

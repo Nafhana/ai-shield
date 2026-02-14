@@ -139,6 +139,7 @@ export function ChatHistorySection() {
             activeTools: log.metadata.activeTools || log.metadata.allowedTools || [],
             lastAgentMessage: log.metadata.analysis || "Historical analysis log",
             agentDialogue: log.metadata.agentDialogue || [],
+            mode: (log.metadata as any).mode || 'shield'
         };
     };
 

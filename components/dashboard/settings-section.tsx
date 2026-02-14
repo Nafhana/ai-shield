@@ -18,6 +18,7 @@ export function SettingsSection() {
     const handleModeChange = (value: "shield" | "guardrail" | "chaos") => {
         setMode(value)
         localStorage.setItem("securityMode", value)
+        window.dispatchEvent(new Event("security-mode-change"));
     }
 
     return (
@@ -43,7 +44,7 @@ export function SettingsSection() {
                     >
                         <option value="shield">AI Shield</option>
                         <option value="guardrail">Standard Guardrail</option>
-                        <option value="chaos">Chaos Mode</option>
+                        <option value="chaos">No Guardrail</option>
                     </select>
                 </div>
             </div>
