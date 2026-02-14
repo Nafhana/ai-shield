@@ -6,9 +6,48 @@ import { runDualAgents, getChatResponse, getGroqResponse } from "@/lib/security/
 // Use environment variable for local dev, fallback to relative path for Vercel
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "/api/predict"
 
+// Helper for uniform logging to Supabase
+async function logRequestToSupabase(data: any) {
+    try {
+        await supabase.from('requests').insert({
+            query: data.query,
+            action: data.action,
+            reason: data.reason,
+            layer: data.layer,
+            metadata: data.metadata,
+            reviewed: false
+        });
+    } catch (err) {
+        console.error("Supabase Logging Error:", err);
+    }
+}
+
 export async function POST(req: Request) {
+    // Initialize log data structure to ensure visualization works for all outcomes
+    let logData: any = {
+        query: "",
+        action: "ALLOWED",
+        reason: "Processed",
+        layer: "SYSTEM",
+        metadata: {
+            mlConfidence: 0,
+            generated_intent: "None",
+            analysis: "Standard processing",
+            tool_calls: [], // Ensure this is always an array for the visualizer
+            aiResponse: "",
+            toolPolicy: "ALLOW_ALL",
+            dualAgentTriggered: false,
+            agentDialogue: [],
+            mode: "shield"
+        }
+    };
+
     try {
         const { message, mode = "shield" } = await req.json()
+        
+        // Populate basic log info
+        logData.query = message;
+        logData.metadata.mode = mode;
 
         // ---------------------------------------------------------
         // Mode: Regular Guardrail (System Prompt Only)
@@ -25,6 +64,12 @@ export async function POST(req: Request) {
             const response = await getChatResponse(`${systemPrompt}\n\nUser: ${message}`, [])
 
             if (response.startsWith("BLOCK:")) {
+                logData.action = "BLOCKED";
+                logData.reason = response.replace("BLOCK:", "").trim();
+                logData.layer = "GUARDRAIL_SYSTEM_PROMPT";
+                logData.metadata.analysis = "Blocked by standard system prompt guardrail.";
+                await logRequestToSupabase(logData);
+
                 return NextResponse.json({
                     blocked: true,
                     reason: response.replace("BLOCK:", "").trim(),
@@ -33,6 +78,10 @@ export async function POST(req: Request) {
                     mode: "guardrail"
                 })
             }
+
+            logData.metadata.aiResponse = response;
+            logData.layer = "GUARDRAIL_SYSTEM_PROMPT";
+            await logRequestToSupabase(logData);
 
             return NextResponse.json({
                 blocked: false,
@@ -57,6 +106,11 @@ export async function POST(req: Request) {
             Otherwise, answer normally.`
 
             const response = await getChatResponse(message, allTools, chaosPrompt)
+
+            logData.layer = "CHAOS_MODE";
+            logData.metadata.aiResponse = response;
+            logData.metadata.allowedTools = allTools;
+            await logRequestToSupabase(logData);
 
             return NextResponse.json({
                 blocked: false,
@@ -124,19 +178,17 @@ export async function POST(req: Request) {
                 generatedIntent = "High-risk attack pattern blocked by infrastructure.";
             }
 
-            // Save to Supabase with the new detailed intent
-            await supabase.from('requests').insert({
-                query: message,
-                action: 'BLOCKED',
-                reason: "Malicious intent detected during initial screening.",
-                layer: 'LAYER_1_ML',
-                metadata: {
-                    mlConfidence,
-                    generated_intent: generatedIntent,
-                    analysis: "Keyword/Vector patterns matched known attacks."
-                },
-                reviewed: false
-            });
+            // Update log data for blocking
+            logData.action = "BLOCKED";
+            logData.reason = generatedIntent; // Use detailed intent as reason
+            logData.layer = "LAYER_1_ML";
+            logData.metadata.mlConfidence = mlConfidence;
+            logData.metadata.generated_intent = generatedIntent;
+            logData.metadata.analysis = "Keyword/Vector patterns matched known attacks.";
+            logData.metadata.toolPolicy = "DENY";
+            logData.metadata.tool_calls = [];
+            
+            await logRequestToSupabase(logData);
 
             return NextResponse.json({
                 blocked: true,
@@ -175,19 +227,19 @@ export async function POST(req: Request) {
             }
 
             if (finalVerdict === "MALICIOUS") {
-                // Save to Supabase requests table
-                await supabase.from('requests').insert({
-                    query: message,
-                    action: 'BLOCKED',
-                    reason: agentSummary,
-                    layer: 'LAYER_2_DUAL_AGENT',
-                    metadata: {
-                        mlConfidence,
-                        generated_intent: agentSummary,
-                        analysis: agentAnalysis
-                    },
-                    reviewed: false
-                });
+                // Update log data for Dual Agent Block
+                logData.action = "BLOCKED";
+                logData.reason = agentSummary;
+                logData.layer = "LAYER_2_DUAL_AGENT";
+                logData.metadata.mlConfidence = mlConfidence;
+                logData.metadata.generated_intent = agentSummary;
+                logData.metadata.analysis = agentAnalysis;
+                logData.metadata.dualAgentTriggered = true;
+                logData.metadata.agentDialogue = agentDialogue;
+                logData.metadata.toolPolicy = "DENY";
+                logData.metadata.tool_calls = [];
+                
+                await logRequestToSupabase(logData);
 
                 return NextResponse.json({
                     blocked: true,
@@ -217,21 +269,35 @@ export async function POST(req: Request) {
         // Get real response from Gemini
         const realResponse = await getChatResponse(message, allowedTools)
 
-        // Log successful request to Supabase
-        // Log successful request to Supabase with detailed intent
-        await supabase.from('requests').insert({
-            query: message,
-            action: 'ALLOWED',
-            reason: dualAgentTriggered ? agentSummary : "Prompt verified by security layer.",
-            layer: dualAgentTriggered ? 'LAYER_2_DUAL_AGENT' : 'LAYER_1_ML',
-            metadata: {
-                mlConfidence,
-                aiResponse: realResponse,
-                toolPolicy,
-                generated_intent: dualAgentTriggered ? agentSummary : "Verified Safe (Layer 1)"
-            },
-            reviewed: false
-        });
+        // Placeholder for tool usage tracking
+        // Note: In a full implementation, getChatResponse should return the actual tools used.
+        const tool_calls: any[] = []
+
+        // DEMO: Simulate a tool call if the user asks about "database" or "search"
+        // This allows you to verify the ToolTrace visualizer is working.
+        if (message.toLowerCase().includes("database") || message.toLowerCase().includes("search")) {
+            tool_calls.push({
+                tool_name: "database_query_executor",
+                input_parameters: { query: "SELECT * FROM users WHERE active = true", limit: 50 },
+                timestamp: new Date().toISOString()
+            })
+        }
+
+        // Update log data for Allowed Request
+        logData.action = "ALLOWED";
+        logData.reason = dualAgentTriggered ? agentSummary : "Prompt verified by security layer.";
+        logData.layer = dualAgentTriggered ? 'LAYER_2_DUAL_AGENT' : 'LAYER_1_ML';
+        logData.metadata.mlConfidence = mlConfidence;
+        logData.metadata.aiResponse = realResponse;
+        logData.metadata.toolPolicy = toolPolicy;
+        logData.metadata.generated_intent = dualAgentTriggered ? agentSummary : "Verified Safe (Layer 1)";
+        logData.metadata.tool_calls = tool_calls;
+        logData.metadata.allowedTools = allowedTools;
+        logData.metadata.dualAgentTriggered = dualAgentTriggered;
+        logData.metadata.agentDialogue = agentDialogue;
+        logData.metadata.analysis = agentAnalysis;
+
+        await logRequestToSupabase(logData);
 
         return NextResponse.json({
             blocked: false,
@@ -250,6 +316,23 @@ export async function POST(req: Request) {
 
     } catch (error) {
         console.error(error)
+        
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+
+        // Fallback logging for errors (e.g. 400 Bad Request or Internal Error)
+        logData.action = "BLOCKED";
+        logData.reason = `System Error: ${errorMessage}`;
+        logData.layer = "ERROR_HANDLER";
+        logData.metadata.analysis = `Request failed due to exception: ${errorMessage}`;
+        logData.metadata.generated_intent = "Error during processing";
+        logData.metadata.toolPolicy = "DENY";
+        logData.metadata.tool_calls = [];
+        
+        // Only log if we have a query (i.e. req.json() succeeded)
+        if (logData.query) {
+             await logRequestToSupabase(logData);
+        }
+
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 })
     }
 }
